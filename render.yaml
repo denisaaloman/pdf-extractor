@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: extractor-tabele-tehnice
+    name: pdf-extractor
     runtime: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
@@ -8,5 +8,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
-      - key: GROQ_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
