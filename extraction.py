@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel, Field
 
@@ -117,6 +119,34 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+RETRYABLE_STATUS_CODES = {429, 500, 503, 504}
+MAX_RETRIES = 5
+BASE_DELAY_SECONDS = 2
+
+
+def _generate_with_retry(client: genai.Client, **kwargs):
+    """
+    Apeleaza client.models.generate_content cu retry + backoff exponential
+    pentru erori tranzitorii (model supraincarcat, rate limit etc.).
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return client.models.generate_content(**kwargs)
+        except genai_errors.APIError as exc:
+            status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            last_exc = exc
+            if status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
+                raise
+            delay = BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "Gemini a raspuns cu %s (incercarea %d/%d), reincerc peste %ds",
+                status_code, attempt, MAX_RETRIES, delay,
+            )
+            time.sleep(delay)
+    raise last_exc
+
+
 def _build_pdf_part(client: genai.Client, pdf_path: Path):
     size = pdf_path.stat().st_size
     if size <= INLINE_SIZE_LIMIT_BYTES:
@@ -139,7 +169,8 @@ def extract_tables_from_pdf(pdf_path: str | Path, filename: Optional[str] = None
         client = _get_client()
         pdf_part = _build_pdf_part(client, pdf_path)
 
-        response = client.models.generate_content(
+        response = _generate_with_retry(
+            client,
             model=MODEL_NAME,
             contents=[SYSTEM_PROMPT, pdf_part],
             config=types.GenerateContentConfig(

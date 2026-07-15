@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from typing import Any
 
 from openpyxl import Workbook
@@ -10,13 +11,18 @@ from openpyxl.utils import get_column_letter
 
 META_HEADERS = ["Fisier", "Tabel", "Categorie", "Rand"]
 
+# Caractere interzise de Excel intr-un nume de sheet
+_INVALID_SHEET_CHARS = re.compile(r'[\\/*?:\[\]]')
+
 
 def _safe_sheet_title(name: str, used: set[str]) -> str:
-    base = (name or "Document")[:28].strip() or "Document"
+    base = _INVALID_SHEET_CHARS.sub("", name or "Tabel").strip() or "Tabel"
+    base = base[:28]
     title = base
     i = 2
     while title in used:
-        title = f"{base[:25]}_{i}"
+        suffix = f"_{i}"
+        title = f"{base[:31 - len(suffix)]}{suffix}"
         i += 1
     used.add(title)
     return title
@@ -54,52 +60,49 @@ def _iter_wide_rows(results: list[dict[str, Any]], unique_columns: list[str]):
                 yield [filename, title, category, row_i] + values
 
 
+def _autosize_columns(ws) -> None:
+    for col_cells in ws.columns:
+        length = max((len(str(c.value)) if c.value is not None else 0 for c in col_cells), default=8)
+        col_letter = get_column_letter(col_cells[0].column)
+        ws.column_dimensions[col_letter].width = min(max(length + 2, 10), 60)
+
+
 def build_xlsx(results: list[dict[str, Any]]) -> bytes:
     """
     results: lista de dict-uri {filename, tables: [{title, category, columns, rows}]}
     (formatul returnat de extraction.extract_tables_from_pdf)
 
-    Produce un sheet PER DOCUMENT, fiecare in format wide:
-    Tabel/Categorie/Rand + toate coloanele unice gasite in tabelele acelui
-    document. Un rand are valori doar pe coloanele tabelului din care provine,
-    restul raman goale.
+    Un sheet PER TABEL/LISTA gasit(a). In fiecare sheet, header-ul e
+    Fisier / Tabel / Categorie / Rand + coloanele originale ale tabelului,
+    iar fiecare rand de date repeta Fisier/Tabel/Categorie/Rand ca si
+    coloane efective (nu bloc de metadata separat).
     """
     wb = Workbook()
     wb.remove(wb.active)
     used_titles: set[str] = set()
 
     for doc in results:
-        sheet_name = _safe_sheet_title(doc.get("filename", "Document"), used_titles)
-        ws = wb.create_sheet(title=sheet_name)
-
-        unique_columns = _collect_unique_columns([doc])
-        headers = ["Tabel", "Categorie", "Rand"] + unique_columns
-        for col_i, h in enumerate(headers, start=1):
-            cell = ws.cell(row=1, column=col_i, value=h)
-            cell.font = Font(bold=True)
-
-        col_index = {col: i for i, col in enumerate(unique_columns)}
-        row_idx = 2
+        filename = doc.get("filename", "Document")
         for table in doc.get("tables", []):
-            title = table.get("title", "")
+            title = table.get("title") or "Tabel"
             category = table.get("category", "")
             columns = table.get("columns") or []
-            for row_i, row in enumerate(table.get("rows", []), start=1):
-                values = [""] * len(unique_columns)
-                for col_name, value in zip(columns, row):
-                    values[col_index[col_name]] = value
-                line = [title, category, row_i] + values
+            rows = table.get("rows", [])
+
+            sheet_name = _safe_sheet_title(title, used_titles)
+            ws = wb.create_sheet(title=sheet_name)
+
+            headers = META_HEADERS + columns
+            for col_i, header in enumerate(headers, start=1):
+                ws.cell(row=1, column=col_i, value=header).font = Font(bold=True)
+
+            for row_i, row in enumerate(rows, start=1):
+                line = [filename, title, category, row_i] + list(row)
                 for col_i, value in enumerate(line, start=1):
-                    ws.cell(row=row_idx, column=col_i, value=value)
-                row_idx += 1
+                    ws.cell(row=row_i + 1, column=col_i, value=value)
 
-        ws.column_dimensions["A"].width = 30
-        ws.column_dimensions["B"].width = 16
-        ws.column_dimensions["C"].width = 8
-        for i in range(len(unique_columns)):
-            col_letter = get_column_letter(3 + i + 1)
-            ws.column_dimensions[col_letter].width = 20
-        ws.freeze_panes = "A2"
+            _autosize_columns(ws)
+            ws.freeze_panes = "A2"
 
     if not wb.sheetnames:
         wb.create_sheet(title="Fara date")
@@ -110,7 +113,7 @@ def build_xlsx(results: list[dict[str, Any]]) -> bytes:
 
 
 def build_csv(results: list[dict[str, Any]]) -> bytes:
-    """CSV nu suporta mai multe sheet-uri - exportam formatul wide (acelasi ca sheet-ul 'Date')."""
+    """CSV nu suporta mai multe sheet-uri - exportam formatul wide (toate tabelele intr-un singur tabel)."""
     unique_columns = _collect_unique_columns(results)
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -119,133 +122,3 @@ def build_csv(results: list[dict[str, Any]]) -> bytes:
         writer.writerow(line)
 
     return buf.getvalue().encode("utf-8-sig")  # BOM ca Excel sa deschida diacriticele corect
-"""
-from __future__ import annotations
-
-import csv
-import io
-from typing import Any
-
-from openpyxl import Workbook
-from openpyxl.styles import Font
-from openpyxl.utils import get_column_letter
-
-META_HEADERS = ["Fisier", "Tabel", "Categorie", "Rand"]
-
-
-def _safe_sheet_title(name: str, used: set[str]) -> str:
-    base = (name or "Document")[:28].strip() or "Document"
-    title = base
-    i = 2
-    while title in used:
-        title = f"{base[:25]}_{i}"
-        i += 1
-    used.add(title)
-    return title
-
-
-def _collect_unique_columns(results: list[dict[str, Any]]) -> list[str]:
-
-    seen: dict[str, None] = {}
-    for doc in results:
-        for table in doc.get("tables", []):
-            for col in table.get("columns") or []:
-                seen.setdefault(col, None)
-    return list(seen.keys())
-
-
-def _iter_wide_rows(results: list[dict[str, Any]], unique_columns: list[str]):
-
-    col_index = {col: i for i, col in enumerate(unique_columns)}
-    for doc in results:
-        filename = doc.get("filename", "")
-        for table in doc.get("tables", []):
-            title = table.get("title", "")
-            category = table.get("category", "")
-            columns = table.get("columns") or []
-            for row_i, row in enumerate(table.get("rows", []), start=1):
-                values = [""] * len(unique_columns)
-                for col_name, value in zip(columns, row):
-                    values[col_index[col_name]] = value
-                yield [filename, title, category, row_i] + values
-
-
-def build_xlsx(results: list[dict[str, Any]]) -> bytes:
-
-    unique_columns = _collect_unique_columns(results)
-
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    # --- Sheet 1: wide, cu identificare sursa ---
-    ws_wide = wb.create_sheet(title="Date")
-    headers = META_HEADERS + unique_columns
-    for col_i, h in enumerate(headers, start=1):
-        cell = ws_wide.cell(row=1, column=col_i, value=h)
-        cell.font = Font(bold=True)
-
-    row_idx = 2
-    for line in _iter_wide_rows(results, unique_columns):
-        for col_i, value in enumerate(line, start=1):
-            ws_wide.cell(row=row_idx, column=col_i, value=value)
-        row_idx += 1
-
-    ws_wide.column_dimensions["A"].width = 24
-    ws_wide.column_dimensions["B"].width = 30
-    ws_wide.column_dimensions["C"].width = 16
-    ws_wide.column_dimensions["D"].width = 8
-    for i in range(len(unique_columns)):
-        col_letter = get_column_letter(len(META_HEADERS) + i + 1)
-        ws_wide.column_dimensions[col_letter].width = 20
-    ws_wide.freeze_panes = "A2"
-
-    # --- Sheet 2: grupat pe blocuri, pentru citit vizual ---
-    used_titles: set[str] = set()
-    for doc in results:
-        sheet_name = _safe_sheet_title(doc.get("filename", "Document"), used_titles)
-        ws = wb.create_sheet(title=sheet_name)
-        row_idx = 1
-
-        for table in doc.get("tables", []):
-            columns = table.get("columns") or []
-            title_cell = ws.cell(row=row_idx, column=1, value=f"{table.get('title', '')}"
-                                  f" [{table.get('category', '')}]")
-            title_cell.font = Font(bold=True, size=12)
-            row_idx += 1
-
-            for col_i, col_name in enumerate(columns, start=1):
-                cell = ws.cell(row=row_idx, column=col_i, value=col_name)
-                cell.font = Font(bold=True)
-            row_idx += 1
-
-            for row in table.get("rows", []):
-                for col_i, value in enumerate(row, start=1):
-                    ws.cell(row=row_idx, column=col_i, value=value)
-                row_idx += 1
-
-            row_idx += 1
-
-        for col_cells in ws.columns:
-            length = max((len(str(c.value)) if c.value is not None else 0 for c in col_cells), default=8)
-            col_letter = get_column_letter(col_cells[0].column)
-            ws.column_dimensions[col_letter].width = min(max(length + 2, 10), 60)
-
-    if not wb.sheetnames:
-        wb.create_sheet(title="Fara date")
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-def build_csv(results: list[dict[str, Any]]) -> bytes:
-
-    unique_columns = _collect_unique_columns(results)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(META_HEADERS + unique_columns)
-    for line in _iter_wide_rows(results, unique_columns):
-        writer.writerow(line)
-
-    return buf.getvalue().encode("utf-8-sig")  # BOM ca Excel sa deschida diacriticele corect
-"""
