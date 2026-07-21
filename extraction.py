@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from google import genai
@@ -31,12 +32,12 @@ class ExtractedTable(BaseModel):
     title: str = Field(description="Titlul exact al tabelului/listei asa cum apare in document")
     category: TableCategory = Field(
         description="TEHNIC pentru specificatii/echipamente/parametri tehnici, "
-        "ADMINISTRATIV pentru date de contract/facturare/organizatorice"
+                    "ADMINISTRATIV pentru date de contract/facturare/organizatorice"
     )
     columns: list[str] = Field(description="Numele coloanelor, in ordinea din document")
     rows: list[list[str]] = Field(
         description="Fiecare rand ca lista de valori, IN ACEEASI ORDINE ca 'columns'. "
-        "Valorile lipsa se pun ca string gol '' pe pozitia respectiva, nu se omit."
+                    "Valorile lipsa se pun ca string gol '' pe pozitia respectiva, nu se omit."
     )
 
 
@@ -52,6 +53,14 @@ Sarcina ta: identifica in document TOATE tabelele si listele care contin
 date tehnice sau administrative reale (specificatii de echipamente,
 parametri, cantitati, coduri, date de contract etc.) si extrage-le ca JSON,
 respectand exact schema ceruta.
+
+IMPORTANT - schemele (paginile cu desene electrice, gen "SCHEMA
+MONOFILARA TGD", "SCHEMA MONOFILARA TE402" etc.) contin de obicei, sub desen,
+un mic tabel cu coloane. Acest
+tabel TREBUIE extras ca tabel de sine statator, cu titlul exact al schemei
+respective (ex: "Schema monofilara TGD - Dulap Nr. 1"), chiar daca restul
+paginii e un desen/schema electrica. NU ignora aceste tabele doar pentru ca
+apar langa un desen tehnic.
 
 REGULI STRICTE DE EXCLUDERE - NU extrage:
 - Cuprinsul / tabla de continut (orice lista de tip "sectiune ... pagina X")
@@ -105,9 +114,38 @@ REGULA PENTRU RANDURI DE SECTIUNE (headere de grup in interiorul tabelului):
 - Daca tabelul nu are astfel de randuri de grupare, NU adauga coloana
   "Sectiune" deloc.
 
+REGULA PENTRU TYPO-URI EVIDENTE (in header-e SI in valori din rows):
+- Daca un cuvant de vocabular romanesc comun (nu cod de produs, nu denumire
+  proprie/marca, nu abreviere tehnica, nu termen strain) contine o greseala
+  de tipar EVIDENTA - litere lipsa, litere inversate, caracter corupt din
+  scanare (ex: "cantitatae" -> "cantitate",
+  "diametul" -> "diametrul") - corecteaza-l la forma corecta, indiferent
+  daca apare intr-un nume de coloana, titlu de tabel sau valoare de rand.
+  Foloseste contextul (restul tabelului) ca sa confirmi ca e intr-adevar
+  o greseala si nu un termen tehnic legitim.
+- NU corecta: coduri (ex: "M41", "4.1M"), denumiri de produse/firme,
+  unitati de masura abreviate, termeni tehnici in alta limba, sau orice
+  cuvant despre care ai dubii ca ar putea fi corect asa cum e scris in
+  original. In caz de dubiu, pastreaza valoarea exact cum apare in document.
+- Aceasta corectare se aplica DOAR la greseli de tipar clare, NU la
+  reformulari, prescurtari alternative, sau "imbunatatiri" de exprimare
+  ale textului original.
+
+REGULA PENTRU NUMEROTARE SECVENTIALA GRESITA (coloana Nr./Nr. crt.):
+- Daca tabelul are o coloana de numerotare secventiala (Nr., Nr. crt.,
+  Poz., etc.) care ar trebui sa creasca cu exact 1 la fiecare rand, si
+  gasesti un salt gresit (ex: ...30, 32, 33... in loc de ...30, 31, 32...
+  sau o repetare/decalaj evident), corecteaza valorile din acea coloana
+  ca sa respecte secventa corecta (+1 fata de randul anterior).
+- Aplica asta DOAR pe coloana de numerotare in sine (Nr./Nr. crt./Poz.),
+  NU pe alte coloane care contin numere cu alt sens (cantitati, coduri,
+  ani, puteri etc.) - acelea raman exact cum apar in document.
+- Daca nu esti sigur ca respectiva coloana e o simpla numerotare
+  secventiala (si nu, de ex., un cod de pozitie cu sens propriu),
+  nu corecta - pastreaza valoarea originala.
+
 Raspunde DOAR cu JSON valid conform schemei, fara text explicativ in plus.
 """
-
 
 
 def _get_client() -> genai.Client:
@@ -157,7 +195,6 @@ def _build_pdf_part(client: genai.Client, pdf_path: Path):
     return client.files.upload(file=str(pdf_path), config={"mime_type": "application/pdf"})
 
 
-
 def extract_tables_from_pdf(pdf_path: str | Path, filename: Optional[str] = None) -> dict:
     """
     Extrage tabelele tehnice/administrative dintr-un PDF.
@@ -182,7 +219,6 @@ def extract_tables_from_pdf(pdf_path: str | Path, filename: Optional[str] = None
 
         parsed: ExtractionResult = response.parsed
         if parsed is None:
-
             parsed = ExtractionResult.model_validate(json.loads(response.text))
 
         tables = [t.model_dump() for t in parsed.tables]
@@ -200,14 +236,3 @@ def extract_tables_from_pdf(pdf_path: str | Path, filename: Optional[str] = None
             "errorMessage": str(exc),
             "tables": [],
         }
-
-
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) != 2:
-        print("Usage: python extraction.py <path_catre_pdf>")
-        raise SystemExit(1)
-
-    result = extract_tables_from_pdf(sys.argv[1])
-    print(json.dumps(result, ensure_ascii=False, indent=2))
