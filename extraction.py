@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -130,6 +131,21 @@ REGULA PENTRU TYPO-URI EVIDENTE (in header-e SI in valori din rows):
 - Aceasta corectare se aplica DOAR la greseli de tipar clare, NU la
   reformulari, prescurtari alternative, sau "imbunatatiri" de exprimare
   ale textului original.
+  
+  REGULA PENTRU COLOANA DE NUMEROTARE (Nr., Nr. crt., etc.):
+- NU prelua valoarea acestei coloane din document. In schimb, genereaz-o tu,
+  numerotand secvential randurile de date din tabelul respectiv, incepand
+  de la 1 si crescand cu exact 1 la fiecare rand (1, 2, 3, ...), in ordinea
+  in care apar in document.
+- Aceasta se aplica indiferent ce scrie efectiv in document pe coloana
+  respectiva (poate sari un numar, poate repeta, poate lipsi) - documentul
+  poate avea greseli, deci nu te bazezi pe el pentru aceasta coloana.
+- Randurile de sectiune (vezi regula de mai sus) NU se numeroteaza si NU
+  consuma un numar din secventa - numerotarea continua neintrerupta doar
+  pe randurile de date reale.
+- Daca tabelul continua pe mai multe pagini (tratat ca un singur tabel),
+  numerotarea continua secvential peste tot tabelul, nu se reseteaza pe
+  pagina noua.
 
 REGULA PENTRU NUMEROTARE SECVENTIALA GRESITA (coloana Nr./Nr. crt.):
 - Daca tabelul are o coloana de numerotare secventiala (Nr., Nr. crt.,
@@ -143,6 +159,7 @@ REGULA PENTRU NUMEROTARE SECVENTIALA GRESITA (coloana Nr./Nr. crt.):
 - Daca nu esti sigur ca respectiva coloana e o simpla numerotare
   secventiala (si nu, de ex., un cod de pozitie cu sens propriu),
   nu corecta - pastreaza valoarea originala.
+  
 
 Raspunde DOAR cu JSON valid conform schemei, fara text explicativ in plus.
 """
